@@ -1,5 +1,8 @@
 #include <Arduino.h>
+
+#include "config.h"
 #include "HX711.h"
+#include "secrets.h"
 
 // HX711 load cell amplifier
 const int LOADCELL_DOUT_PIN = 16;
