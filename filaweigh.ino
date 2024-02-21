@@ -1,10 +1,12 @@
 #include <Arduino.h>
 //#include <WebServer.h>
 #include <ESPAsyncWebServer.h>
+#include <HX711.h>
 #include <WiFi.h>
 
 #include "config.h"
-#include "HX711.h"
+//#include "HX711.h"
+#include "index.h"
 #include "secrets.h"
 
 // HX711 load cell amplifier settings
@@ -75,52 +77,29 @@ void setupWebServer()
   server.begin(); 
 }
 
+const char* g_web_contents_body = R"=====(
+  <h1>Data</h1>
+  <p>HX711 reading: <span style="color:green;"> <span id="weight">Loading...</span> </span></p>
+  <script>
+    function fetchWeight() {
+      fetch("/weight")
+        .then(response => response.text())
+        .then(data => {
+          document.getElementById("weight").textContent = data;
+        });
+    }
+    fetchWeight();
+    setInterval(fetchWeight, 500);
+  </script>
+)=====";
+
+
 void handleRoot(AsyncWebServerRequest* request) {
-  String html = "<html><head>";
-  html += "<title>Filaweigh</title>";
-  html += "<title>Wandering Hour Clock</title>";
-  html += "  <meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "  <style>";
-  html += "    body {";
-  html += "      font-family: Arial, Helvetica, sans-serif;";
-  html += "    }";
-  html += "";
-  html += "    .container {";
-  html += "      width: 100%;";
-  html += "      max-width: 400px;";
-  html += "      margin: 0 auto;";
-  html += "      padding: 20px;";
-  html += "    }";
-  html += "";
-  html += "    label {";
-  html += "      display: block;";
-  html += "      margin-bottom: 10px;";
-  html += "    }";
-  html += "";
-  html += "    input[type='number'] {";
-  html += "      width: 100%;";
-  html += "      padding: 10px;";
-  html += "      margin-bottom: 20px;";
-  html += "      border: 1px solid #ccc;";
-  html += "      border-radius: 4px;";
-  html += "      box-sizing: border-box;";
-  html += "    }";
-  html += "";
-  html += "    button {";
-  html += "      background-color: #4CAF50;";
-  html += "      color: white;";
-  html += "      padding: 10px 20px;";
-  html += "      border: none;";
-  html += "      border-radius: 4px;";
-  html += "      cursor: pointer;";
-  html += "      width: 100%;";
-  html += "    }";
-  html += "";
-  html += "    button:hover {";
-  html += "      background-color: #45a049;";
-  html += "    }";
-  html += "  </style>";
-  html += "</head><body>";
+  String html = g_web_contents_head;
+
+  // Body
+  html += "<body>";
+  html += g_web_contents_body;
 
   html += "<div class='container'>";
 
@@ -134,6 +113,8 @@ void handleRoot(AsyncWebServerRequest* request) {
   html += "<br/><div>time=" + esptime  + "</div>";
 
   html += "</div>";
+  html += "</body>";
+  html += "</html>";
 
 
   request->send(200, "text/html", html);
@@ -145,7 +126,10 @@ void handleTare(AsyncWebServerRequest* request) {
 }
 
 void handleWeight(AsyncWebServerRequest* request) {
-  request->send(200, "application/json", "");
+  long weight = scale.read_average(3);
+  String weightStr = String(weight);
+  request->send(200, "text/plain", weightStr);
+  //request->send(200, "application/json", "");
 }
 
 void handleCalibrate(AsyncWebServerRequest* request) {
@@ -181,7 +165,7 @@ void l2() {
     Serial.println("HX711 not found.");
   }
 
-  delay(1000);
+  delay(5000);
 }
 
 void loop() {
