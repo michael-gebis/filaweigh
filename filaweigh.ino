@@ -65,6 +65,11 @@ void setupWiFi() {
   Serial.println("Connected to WiFi");
   Serial.println("IP address: " + WiFi.localIP().toString());
 }
+void handleRoot(AsyncWebServerRequest* request);
+void handleCalibrate(AsyncWebServerRequest* request);
+void handleTare(AsyncWebServerRequest* request);
+void handleWeightJson(AsyncWebServerRequest* request);
+void handleGetSettings(AsyncWebServerRequest* request);
 
 void setupWebServer()
 {
@@ -73,6 +78,7 @@ void setupWebServer()
   server.on("/calibrate", HTTP_POST, handleCalibrate);
   server.on("/tare", HTTP_POST, handleTare);
   server.on("/weight", HTTP_GET, handleWeightJson);
+  server.on("/settings", HTTP_GET, handleGetSettings);
 
   // Start the server
   server.begin(); 
@@ -97,19 +103,64 @@ const char* g_web_contents_body = R"=====(
 
 const char* g_web_contents_body_json = R"=====(
   <h1>Data</h1>
-  <p>HX711 reading: <span style="color:green;"> <span id="weight">Loading...</span> </span></p>
+  <p>HX711 reading 
+    <span style="color:green;"> 
+      raw:<span id="raw">Loading...</span> 
+      tare:<span id="tare">Loading</span> 
+      adjusted:<span id="adjusted">Loading...</span>
+    </span>
+  </p>
+
+  <h1>Settings</h1>
+  <p>IPv4: <span id="ipv4">Loading...</span></p>
+  <p>IPv6: <span id="ipv6">Loading...</span></p>
   <script>
     function fetchWeight() {
       fetch("/weight")
         .then(response => response.json())
         .then(data => {
-          document.getElementById("weight").textContent = data.value_raw;
+          document.getElementById("raw").textContent = data.raw;
+          document.getElementById("tare").textContent = data.tare;
+          document.getElementById("adjusted").textContent = data.adjusted;
+          
         })
         .catch(console.error);
     }
+
+    function fetchSettings() {
+      fetch("/settings")
+        .then(response => response.json())
+        .then(data => {
+          document.getElementById("ipv4").textContent = data.ipv4;
+          document.getElementById("ipv6").textContent = data.ipv6;
+        })
+        .catch(console.error);      
+    }
+
+    function sendTare() {
+      let xhr = new XMLHttpRequest();
+      let url = "tare";
+
+      xhr.open("POST", url, true);
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+
+          // Print received data from server
+          result.innerHTML = this.responseText;
+        }
+      }        
+      var data = JSON.stringify({"dummy": "foo"});
+      xhr.send(data);
+    }
     fetchWeight();
-    setInterval(fetchWeight, 500);
+    fetchSettings();
+    setInterval(fetchWeight, 1000);
+    //setInterval(fetchSettings, 2000);
   </script>
+  <h1>Actions</h1>
+  <p>
+    <button onclick="sendTare()">Tare</button>
+  </p1>
 )=====";
 
 void handleRoot(AsyncWebServerRequest* request) {
@@ -140,21 +191,32 @@ void handleRoot(AsyncWebServerRequest* request) {
 }
 
 void handleTare(AsyncWebServerRequest* request) {
-  g_tare = scale.read_average(3);
+  Serial.println("handleTare");
+  g_tare = scale.read_average(20);
+  Serial.println("tare set!");
+  JsonDocument data;
+  data["tare"] = g_tare;
+  String response;
+  serializeJson(data,response);
+  request->send(200, "application/json", response);
+  Serial.println(response);
+  //request->send(200, "text/plain", weightStr);
 }
 
 void handleWeight(AsyncWebServerRequest* request) {
-  long weight = scale.read_average(3);
+  long weight = scale.read_average(10);
   String weightStr = String(weight);
   request->send(200, "text/plain", weightStr);
   //request->send(200, "application/json", "");
 }
 
 void handleWeightJson(AsyncWebServerRequest* request) {
-  long weight = scale.read_average(3);
+  long weight = scale.read_average(3); // blocking
   //String weightStr = String(weight);
-  StaticJsonDocument<100> data;
-  data["value_raw"] = String(weight);
+  JsonDocument data;
+  data["raw"] = String(weight);
+  data["tare"] = String(g_tare);
+  data["adjusted"] = String(weight-g_tare);
   String response;
   serializeJson(data,response);
   request->send(200, "application/json", response);
@@ -163,6 +225,19 @@ void handleWeightJson(AsyncWebServerRequest* request) {
 
 void handleCalibrate(AsyncWebServerRequest* request) {
   request->send(200, "application/json", "");
+}
+
+void handleGetSettings(AsyncWebServerRequest* request) {
+  //long weight = scale.read_average(3); // blocking
+  //String weightStr = String(weight);
+  Serial.println("handleGetSettings");
+  JsonDocument data;
+  data["ipv4"] = String(WiFi.localIP().toString());
+  data["ipv6"] = String(WiFi.localIPv6().toString());
+  String response;
+  serializeJson(data,response);
+  request->send(200, "application/json", response);
+  Serial.println(response);
 }
 
 void setup() {
@@ -200,7 +275,7 @@ void l2() {
 
 void loop() {
   l2();
-  Serial.println(WiFi.localIPv6());
-  Serial.println(WiFi.localIP());
+  //Serial.println(WiFi.localIPv6());
+  //Serial.println(WiFi.localIP());
 }
 
