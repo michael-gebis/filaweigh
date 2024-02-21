@@ -1,5 +1,5 @@
 #include <Arduino.h>
-//#include <WebServer.h>
+#include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <HX711.h>
 #include <WiFi.h>
@@ -49,6 +49,7 @@ void setupWiFi() {
   WiFi.setHostname(hostname);
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
   WiFi.mode(WIFI_STA);
+  WiFi.enableIpV6();
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
@@ -71,7 +72,7 @@ void setupWebServer()
   server.on("/", HTTP_GET, handleRoot);
   server.on("/calibrate", HTTP_POST, handleCalibrate);
   server.on("/tare", HTTP_POST, handleTare);
-  server.on("/weight", HTTP_GET, handleWeight);
+  server.on("/weight", HTTP_GET, handleWeightJson);
 
   // Start the server
   server.begin(); 
@@ -94,12 +95,29 @@ const char* g_web_contents_body = R"=====(
 )=====";
 
 
+const char* g_web_contents_body_json = R"=====(
+  <h1>Data</h1>
+  <p>HX711 reading: <span style="color:green;"> <span id="weight">Loading...</span> </span></p>
+  <script>
+    function fetchWeight() {
+      fetch("/weight")
+        .then(response => response.json())
+        .then(data => {
+          document.getElementById("weight").textContent = data.value_raw;
+        })
+        .catch(console.error);
+    }
+    fetchWeight();
+    setInterval(fetchWeight, 500);
+  </script>
+)=====";
+
 void handleRoot(AsyncWebServerRequest* request) {
   String html = g_web_contents_head;
 
   // Body
   html += "<body>";
-  html += g_web_contents_body;
+  html += g_web_contents_body_json;
 
   html += "<div class='container'>";
 
@@ -132,6 +150,17 @@ void handleWeight(AsyncWebServerRequest* request) {
   //request->send(200, "application/json", "");
 }
 
+void handleWeightJson(AsyncWebServerRequest* request) {
+  long weight = scale.read_average(3);
+  //String weightStr = String(weight);
+  StaticJsonDocument<100> data;
+  data["value_raw"] = String(weight);
+  String response;
+  serializeJson(data,response);
+  request->send(200, "application/json", response);
+  Serial.println(response);
+}
+
 void handleCalibrate(AsyncWebServerRequest* request) {
   request->send(200, "application/json", "");
 }
@@ -157,12 +186,13 @@ void setup() {
 
 void l2() {
   
-  if (scale.is_ready()) {
-    long reading = scale.read_average(3);
+  //if (scale.is_ready()) {
+  if (scale.wait_ready_timeout(200)) {
+    long reading = scale.read_average(1);
     Serial.print("HX711 reading: ");
     Serial.println(reading);
   } else {
-    Serial.println("HX711 not found.");
+    Serial.println("HX711 not found or not ready.");
   }
 
   delay(5000);
@@ -170,5 +200,7 @@ void l2() {
 
 void loop() {
   l2();
+  Serial.println(WiFi.localIPv6());
+  Serial.println(WiFi.localIP());
 }
 
