@@ -4,10 +4,39 @@
 #include <HX711.h>
 #include <WiFi.h>
 
+#include <mutex>
+
 #include "config.h"
 //#include "HX711.h"
 #include "index.h"
 #include "secrets.h"
+
+template<unsigned int N>
+struct RollingAverage {
+  long values[N];
+  long valid_count = 0;
+  long idx = 0;
+  
+  void insert(long value) {
+    values[idx] = value;
+    if (valid_count < N) {
+      ++valid_count;
+    }
+    idx = (idx+1) % N;
+  }
+
+  long average() {
+    long sum = 0;
+    for (int i = 0; i < valid_count; i++) {
+      sum += values[i];
+    }
+
+    if (valid_count == 0) { return 0; }
+
+    return sum/valid_count;
+  }
+
+};
 
 // HX711 load cell amplifier settings
 const int LOADCELL_DOUT_PIN = 16;
@@ -25,7 +54,14 @@ const char* hostname = FILAWEIGH_HOSTNAME;
 // Webserver settings
 AsyncWebServer server(80);
 
+// Weight values
+std::mutex weight_mtx;
+long g_value = 0;
 long g_tare = 0;
+long g_calweight = 213245;
+RollingAverage<10> g_hx711_values;
+
+float g_grams_per_count = 1.0f/426.49f;
 
 void setupWiFi() {
   // For arduino-esp32 V2.0.14, calling setHostname(...) followed by
@@ -70,6 +106,7 @@ void handleCalibrate(AsyncWebServerRequest* request);
 void handleTare(AsyncWebServerRequest* request);
 void handleWeightJson(AsyncWebServerRequest* request);
 void handleGetSettings(AsyncWebServerRequest* request);
+void handleCommand(AsyncWebServerRequest* request);
 
 void setupWebServer()
 {
@@ -79,27 +116,11 @@ void setupWebServer()
   server.on("/tare", HTTP_POST, handleTare);
   server.on("/weight", HTTP_GET, handleWeightJson);
   server.on("/settings", HTTP_GET, handleGetSettings);
+  server.on("/command", HTTP_POST, handleCommand);
 
   // Start the server
   server.begin(); 
 }
-
-const char* g_web_contents_body = R"=====(
-  <h1>Data</h1>
-  <p>HX711 reading: <span style="color:green;"> <span id="weight">Loading...</span> </span></p>
-  <script>
-    function fetchWeight() {
-      fetch("/weight")
-        .then(response => response.text())
-        .then(data => {
-          document.getElementById("weight").textContent = data;
-        });
-    }
-    fetchWeight();
-    setInterval(fetchWeight, 500);
-  </script>
-)=====";
-
 
 const char* g_web_contents_body_json = R"=====(
   <h1>Data</h1>
@@ -108,6 +129,7 @@ const char* g_web_contents_body_json = R"=====(
       raw:<span id="raw">Loading...</span> 
       tare:<span id="tare">Loading</span> 
       adjusted:<span id="adjusted">Loading...</span>
+      weight(g):<span id="weight_g">Loading...</span>
     </span>
   </p>
 
@@ -122,6 +144,7 @@ const char* g_web_contents_body_json = R"=====(
           document.getElementById("raw").textContent = data.raw;
           document.getElementById("tare").textContent = data.tare;
           document.getElementById("adjusted").textContent = data.adjusted;
+          document.getElementById("weight_g").textContent = data.weight_g;
           
         })
         .catch(console.error);
@@ -142,13 +165,13 @@ const char* g_web_contents_body_json = R"=====(
       let url = "tare";
 
       xhr.open("POST", url, true);
-      xhr.onreadystatechange = function() {
-        if (xhr.readyState === 4 && xhr.status === 200) {
-
-          // Print received data from server
-          result.innerHTML = this.responseText;
-        }
-      }        
+      //xhr.onreadystatechange = function() {
+      //  if (xhr.readyState === 4 && xhr.status === 200) {
+      //
+      //    // Print received data from server
+      //    result.innerHTML = this.responseText;
+      //  }
+      //}        
       var data = JSON.stringify({"dummy": "foo"});
       xhr.send(data);
     }
@@ -157,42 +180,39 @@ const char* g_web_contents_body_json = R"=====(
     setInterval(fetchWeight, 1000);
     //setInterval(fetchSettings, 2000);
   </script>
-  <h1>Actions</h1>
+  <h1>Commands</h1>
   <p>
     <button onclick="sendTare()">Tare</button>
-  </p1>
+  </p>
 )=====";
 
 void handleRoot(AsyncWebServerRequest* request) {
   String html = g_web_contents_head;
 
-  // Body
-  html += "<body>";
+  html += "  <body>\n";
   html += g_web_contents_body_json;
 
-  html += "<div class='container'>";
-
-  html += "<h2>Debug</h2>";
-  html += "<br/><div>hostname = " + String(hostname) + "</div>";
-
+  html += "    <div class='container'>\n";
+  html += "    <h2>Debug</h2>\n";
+  html += "    <br/><div>hostname = " + String(hostname) + "</div>\n";
   long reading = scale.read_average(3);
-  html += "<br/><div>reading = " + String(reading) + "</div>";
+  html += "    <br/><div>reading = " + String(reading) + "</div>\n";
 
   String esptime(esp_timer_get_time());
-  html += "<br/><div>time=" + esptime  + "</div>";
+  html += "    <br/><div>time=" + esptime  + "</div>\n";
 
-  html += "</div>";
-  html += "</body>";
-  html += "</html>";
-
-
+  html += "    </div>\n";
+  html += "  </body>\n";
+  html += "</html>\n";
   request->send(200, "text/html", html);
-
 }
 
 void handleTare(AsyncWebServerRequest* request) {
   Serial.println("handleTare");
-  g_tare = scale.read_average(20);
+  {
+    std::lock_guard<std::mutex> lck(weight_mtx);
+    g_tare = g_value;
+  }
   Serial.println("tare set!");
   JsonDocument data;
   data["tare"] = g_tare;
@@ -203,38 +223,59 @@ void handleTare(AsyncWebServerRequest* request) {
   //request->send(200, "text/plain", weightStr);
 }
 
-void handleWeight(AsyncWebServerRequest* request) {
-  long weight = scale.read_average(10);
-  String weightStr = String(weight);
-  request->send(200, "text/plain", weightStr);
-  //request->send(200, "application/json", "");
-}
-
 void handleWeightJson(AsyncWebServerRequest* request) {
-  long weight = scale.read_average(3); // blocking
-  //String weightStr = String(weight);
+  long weight;
+  {
+    std::lock_guard<std::mutex> lck(weight_mtx);
+    //weight = g_value;
+    weight = g_hx711_values.average();
+  }
   JsonDocument data;
+  String response;
+
   data["raw"] = String(weight);
   data["tare"] = String(g_tare);
   data["adjusted"] = String(weight-g_tare);
-  String response;
+  data["weight_g"] = String( (weight-g_tare) * g_grams_per_count);
+
   serializeJson(data,response);
   request->send(200, "application/json", response);
   Serial.println(response);
 }
 
 void handleCalibrate(AsyncWebServerRequest* request) {
+//  if(request->isPost()) {
+//
+//    if(request->hasParam("calibrationWeightGrams")) {
+//      float calweight = request->getParam("calibrationWeightGrams")->value()->toFloat();
+//      Serial.println(calweight);
+//    }
+//
+//    request->send(200, "application/json", "");
+//    return;
+//  } 
+  
+  Serial.println("Got a calibrate that was not a POST");
+  request->send(200, "application/json", "");
+}
+
+void handleCommand(AsyncWebServerRequest* request) {
+  
+
+  JsonDocument data;
+  String response;
+
   request->send(200, "application/json", "");
 }
 
 void handleGetSettings(AsyncWebServerRequest* request) {
-  //long weight = scale.read_average(3); // blocking
-  //String weightStr = String(weight);
   Serial.println("handleGetSettings");
   JsonDocument data;
+  String response;
+
   data["ipv4"] = String(WiFi.localIP().toString());
   data["ipv6"] = String(WiFi.localIPv6().toString());
-  String response;
+  
   serializeJson(data,response);
   request->send(200, "application/json", response);
   Serial.println(response);
@@ -259,23 +300,34 @@ void setup() {
   Serial.println("Setup Done!");
 }
 
-void l2() {
+void read_hx711() {
   
   //if (scale.is_ready()) {
-  if (scale.wait_ready_timeout(200)) {
+  if (scale.wait_ready_timeout(100)) {
+    int64_t start = esp_timer_get_time();
     long reading = scale.read_average(1);
-    Serial.print("HX711 reading: ");
+    int64_t stop = esp_timer_get_time();
+    Serial.print("HX711 value: ");
     Serial.println(reading);
+    Serial.print("time(us):");
+    Serial.println(stop-start);
+
+    {
+      std::lock_guard<std::mutex> lck(weight_mtx);
+      g_value = reading;
+      g_hx711_values.insert(reading);
+    }
+    Serial.print("HX711 rolling average:");
+    Serial.println(g_hx711_values.average());
   } else {
     Serial.println("HX711 not found or not ready.");
   }
 
-  delay(5000);
+  delay(100); // milliseconds
 }
 
 void loop() {
-  l2();
-  //Serial.println(WiFi.localIPv6());
-  //Serial.println(WiFi.localIP());
+  read_hx711();
+
 }
 
