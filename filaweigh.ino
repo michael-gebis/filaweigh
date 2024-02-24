@@ -7,7 +7,7 @@
 #include <mutex>
 
 #include "config.h"
-//#include "HX711.h"
+#include "favicon.h"
 #include "index.h"
 #include "secrets.h"
 
@@ -16,6 +16,7 @@ struct RollingAverage {
   long values[N];
   long valid_count = 0;
   long idx = 0;
+  int64_t total_samples = 0;
   
   void insert(long value) {
     values[idx] = value;
@@ -23,15 +24,17 @@ struct RollingAverage {
       ++valid_count;
     }
     idx = (idx+1) % N;
+    ++total_samples;
   }
 
   long average() {
     long sum = 0;
+
+    if (valid_count == 0) { return 0; }
+
     for (int i = 0; i < valid_count; i++) {
       sum += values[i];
     }
-
-    if (valid_count == 0) { return 0; }
 
     return sum/valid_count;
   }
@@ -54,14 +57,25 @@ const char* hostname = FILAWEIGH_HOSTNAME;
 // Webserver settings
 AsyncWebServer server(80);
 
+
 // Weight values
 std::mutex weight_mtx;
 long g_value = 0;
 long g_tare = 0;
 long g_calweight = 213245;
+
+// A rolling average gives us a more stable value for display
+// but at cost of having to wait for the average to stablize 
+// after the weight on the load cell changed.
+//
+// The HX711 runs at 10 samples per second.
+//
+// For now, using 10 samples (thus a stabilization time of 1 second)
+// seems like an OK tradeoff.
 RollingAverage<10> g_hx711_values;
 
-float g_grams_per_count = 1.0f/426.49f;
+
+float g_grams_per_count = 1.0f/427.576f;
 
 void setupWiFi() {
   // For arduino-esp32 V2.0.14, calling setHostname(...) followed by
@@ -70,8 +84,8 @@ void setupWiFi() {
 
   // The above ordering shouldn't really be required; in an ideal
   // world, calling setHostname() any time before begin() should be ok.
-  // I am hopeful this will remain true in the future.  But in any case,
-  // this is what works for me now.
+  // I am hopeful this will be true in the future. But in any case,
+  // this code is what works for me now.
 
   // Note that calling getHostname() isn't a reliable way to verify
   // the hostname, because getHostname() reads the current internal
@@ -107,6 +121,7 @@ void handleTare(AsyncWebServerRequest* request);
 void handleWeightJson(AsyncWebServerRequest* request);
 void handleGetSettings(AsyncWebServerRequest* request);
 void handleCommand(AsyncWebServerRequest* request);
+void handleFavicon(AsyncWebServerRequest* request);
 
 void setupWebServer()
 {
@@ -117,13 +132,21 @@ void setupWebServer()
   server.on("/weight", HTTP_GET, handleWeightJson);
   server.on("/settings", HTTP_GET, handleGetSettings);
   server.on("/command", HTTP_POST, handleCommand);
-
+  server.on("/favicon.ico", HTTP_GET, handleFavicon);
+/*
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/scale", HTTP_GET, handleScaleGet);
+  server.on("/scale", HTTP_PUT, handleScalePut);
+  server.on("/network", HTTP_GET, handleNetworkGet);
+  // server.on("/network", HTTP_PUT, handleNetworkPut);
+*/
   // Start the server
   server.begin(); 
 }
 
-const char* g_web_contents_body_json = R"=====(
-  <h1>Data</h1>
+const char* g_web_contents_body = R"=====(
+  <body>
+  <h1>Thoth Network Scale at HOSTNAME</h1>
   <p>HX711 reading 
     <span style="color:green;"> 
       raw:<span id="raw">Loading...</span> 
@@ -184,34 +207,29 @@ const char* g_web_contents_body_json = R"=====(
   <p>
     <button onclick="sendTare()">Tare</button>
   </p>
+  </body>
 )=====";
 
 void handleRoot(AsyncWebServerRequest* request) {
-  String html = g_web_contents_head;
-
-  html += "  <body>\n";
-  html += g_web_contents_body_json;
-
-  html += "    <div class='container'>\n";
-  html += "    <h2>Debug</h2>\n";
-  html += "    <br/><div>hostname = " + String(hostname) + "</div>\n";
-  long reading = scale.read_average(3);
-  html += "    <br/><div>reading = " + String(reading) + "</div>\n";
-
-  String esptime(esp_timer_get_time());
-  html += "    <br/><div>time=" + esptime  + "</div>\n";
-
-  html += "    </div>\n";
-  html += "  </body>\n";
+  String html = "</html>\n";
+  html += g_web_contents_head;
+  html += g_web_contents_body;
   html += "</html>\n";
+
   request->send(200, "text/html", html);
+}
+
+void handleFavicon(AsyncWebServerRequest* request) {
+  Serial.println("Sending favicon");
+  request->send_P(200, "image/x-icon",  (uint8_t*)favicon, sizeof(favicon));
 }
 
 void handleTare(AsyncWebServerRequest* request) {
   Serial.println("handleTare");
   {
     std::lock_guard<std::mutex> lck(weight_mtx);
-    g_tare = g_value;
+    //g_tare = g_value;
+    g_tare = g_hx711_values.average();
   }
   Serial.println("tare set!");
   JsonDocument data;
@@ -240,7 +258,7 @@ void handleWeightJson(AsyncWebServerRequest* request) {
 
   serializeJson(data,response);
   request->send(200, "application/json", response);
-  Serial.println(response);
+  //Serial.println(response);
 }
 
 void handleCalibrate(AsyncWebServerRequest* request) {
@@ -260,8 +278,6 @@ void handleCalibrate(AsyncWebServerRequest* request) {
 }
 
 void handleCommand(AsyncWebServerRequest* request) {
-  
-
   JsonDocument data;
   String response;
 
@@ -303,31 +319,33 @@ void setup() {
 void read_hx711() {
   
   //if (scale.is_ready()) {
-  if (scale.wait_ready_timeout(100)) {
-    int64_t start = esp_timer_get_time();
+  if (scale.wait_ready_timeout(1000)) {
+    //int64_t start = esp_timer_get_time();
     long reading = scale.read_average(1);
-    int64_t stop = esp_timer_get_time();
-    Serial.print("HX711 value: ");
-    Serial.println(reading);
-    Serial.print("time(us):");
-    Serial.println(stop-start);
+    //int64_t stop = esp_timer_get_time();
+    //Serial.print("HX711 value: ");
+    //Serial.println(reading);
+    //Serial.print("time(us):");
+    //Serial.println(stop-start);
 
     {
       std::lock_guard<std::mutex> lck(weight_mtx);
       g_value = reading;
       g_hx711_values.insert(reading);
     }
-    Serial.print("HX711 rolling average:");
-    Serial.println(g_hx711_values.average());
+    //Serial.print("HX711 rolling average:");
+    //Serial.println(g_hx711_values.average());
   } else {
     Serial.println("HX711 not found or not ready.");
   }
 
-  delay(100); // milliseconds
+  // sleep to give other tasks time to run.  This also gives time
+  // for the HX711 to "recover".  Max sample rate is 10 samples per second.
+  delay(90); // milliseconds
+
 }
 
 void loop() {
   read_hx711();
-
 }
 

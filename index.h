@@ -2,9 +2,8 @@
 #define INDEX_H
 
 const char* g_web_contents_head = R"=====(
-<html>
   <head>
-    <link rel="shortcut icon" href="#">  
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">  
     <title>Filaweigh</title>
     <meta name='viewport' content='width=device-width, initial-scale=1'>
     <style>
