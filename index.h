@@ -44,4 +44,71 @@ const char* g_web_contents_head = R"=====(
   </head>
 )=====";
 
+
+const char* g_web_contents_body = R"=====(
+  <body>
+  <h1>Thoth Network Scale</h1>
+  <p>HX711 readings:<br/> 
+    <span style="color:green;"> 
+      raw:<span id="raw">Loading...</span> <br/>
+      tare:<span id="tare">Loading</span> <br/>
+      adjusted:<span id="adjusted">Loading...</span><br/>
+      weight(g):<span id="weight_g">Loading...</span><br/>
+    </span>
+  </p>
+
+  <h1>Settings</h1>
+  <p>IPv4: <span id="ipv4">Loading...</span></p>
+  <p>IPv6: <span id="ipv6">Loading...</span></p>
+
+  <script>
+    function fetchScale() {
+      fetch("/api/v1/scale")
+        .then(response => response.json())
+        .then(data => {
+          document.getElementById("raw").textContent = data.raw;
+          document.getElementById("tare").textContent = data.tare;
+          document.getElementById("adjusted").textContent = data.adjusted;
+          document.getElementById("weight_g").textContent = data.weight_g;
+          
+        })
+        .catch(console.error);
+    }
+
+    function fetchSettings() {
+      fetch("/api/v1/settings")
+        .then(response => response.json())
+        .then(data => {
+          document.getElementById("ipv4").textContent = data.ipv4;
+          document.getElementById("ipv6").textContent = data.ipv6;
+        })
+        .catch(console.error);      
+    }
+
+    function sendTare() {
+      const requestOptions =  { 
+        method: "PUT", 
+        headers: { "Content-type": "application/json" },
+        body: JSON.stringify({ tare: true }),
+      };
+
+      fetch("/api/v1/scale", requestOptions)
+        .then(response => response.json())
+        .then(data => console.log(data))
+        .catch(console.error);
+    }
+
+    fetchScale();
+    fetchSettings();
+    setInterval(fetchScale, 1000);
+    //setInterval(fetchSettings, 2000);
+  </script>
+
+  <h1>Commands</h1>
+  <p>
+    <button onclick="sendTare()">Tare</button>
+  </p>
+  </body>
+)=====";
+
 #endif

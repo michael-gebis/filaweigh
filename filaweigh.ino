@@ -11,6 +11,8 @@
 #include "index.h"
 #include "secrets.h"
 
+const int VERBOSE = 1;
+
 template<unsigned int N>
 struct RollingAverage {
   long values[N];
@@ -27,16 +29,31 @@ struct RollingAverage {
     ++total_samples;
   }
 
-  long average() {
-    long sum = 0;
+  double average() {
+    double sum = 0.0;
 
-    if (valid_count == 0) { return 0; }
+    if (valid_count == 0) { return 0.0; }
 
     for (int i = 0; i < valid_count; i++) {
       sum += values[i];
     }
 
     return sum/valid_count;
+  }
+
+  double stddev() {
+    double a = this->average();
+    double s = 0;
+
+    if (valid_count <= 1) { return 0.0; }
+
+    for (int i=0; i < valid_count; i++) {
+      s += (a - values[i]) * (a - values[i]);
+    }
+
+    s /= (valid_count - 1);
+
+    return std::sqrt(s);
   }
 
 };
@@ -57,7 +74,6 @@ const char* hostname = FILAWEIGH_HOSTNAME;
 // Webserver settings
 AsyncWebServer server(80);
 
-
 // Weight values
 std::mutex weight_mtx;
 long g_value = 0;
@@ -74,8 +90,7 @@ long g_calweight = 213245;
 // seems like an OK tradeoff.
 RollingAverage<10> g_hx711_values;
 
-
-float g_grams_per_count = 1.0f/427.576f;
+double g_grams_per_count = 1.0f/427.576f;
 
 void setupWiFi() {
   // For arduino-esp32 V2.0.14, calling setHostname(...) followed by
@@ -115,102 +130,46 @@ void setupWiFi() {
   Serial.println("Connected to WiFi");
   Serial.println("IP address: " + WiFi.localIP().toString());
 }
-void handleRoot(AsyncWebServerRequest* request);
-void handleCalibrate(AsyncWebServerRequest* request);
-void handleTare(AsyncWebServerRequest* request);
-void handleWeightJson(AsyncWebServerRequest* request);
-void handleGetSettings(AsyncWebServerRequest* request);
-void handleCommand(AsyncWebServerRequest* request);
-void handleFavicon(AsyncWebServerRequest* request);
+
+////
+
+// Design tradeoffs for handling Web APIs, specifically POST/PUT:
+// Since these handlers are not processing normal HTML form data (which would be sent
+// as "Content-Type: application/x-www-form-urlencoded") they cannot
+// rely upon the normal parameter parsing logic for POST or PUT.
+
+// To parse the JSON data sent as part of the body, I see two possibilties:
+// - Use the five argument server.on, and use the ArBodyHandlerFunction
+//   callback to parse the body JSON data.
+// - Use server.addHandler with a AsyncCallbackJsonWebHandler.
+//   The handler would have to check if the request was GET/POST/PUT for itself
+
+// For now, I have chosen to use the ArBodyHandlerFunction solution.
+
+// Further reading: https://github.com/me-no-dev/ESPAsyncWebServer/issues/195
+
+// Example of ArBodyHandlerFunction at https://github.com/e-tinkers/esp32_ir_remote/blob/master/src/main.cpp
+// Another example of ArBodyHandlerFunction: https://www.dfrobot.com/blog-1172.html
+// Example of AsyncCallbackJsonWebHandler: https://raphaelpralat.medium.com/example-of-json-rest-api-for-esp32-4a5f64774a05
 
 void setupWebServer()
 {
-  // Add various routes
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/calibrate", HTTP_POST, handleCalibrate);
-  server.on("/tare", HTTP_POST, handleTare);
-  server.on("/weight", HTTP_GET, handleWeightJson);
-  server.on("/settings", HTTP_GET, handleGetSettings);
-  server.on("/command", HTTP_POST, handleCommand);
-  server.on("/favicon.ico", HTTP_GET, handleFavicon);
-/*
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/scale", HTTP_GET, handleScaleGet);
-  server.on("/scale", HTTP_PUT, handleScalePut);
-  server.on("/network", HTTP_GET, handleNetworkGet);
-  // server.on("/network", HTTP_PUT, handleNetworkPut);
-*/
+  // Minmimal web server support
+  server.on("/", HTTP_GET, handleGETRoot);
+  server.on("/favicon.ico", HTTP_GET, handleGETFavicon);
+
+  // API routes
+  server.on("/api/v1/scale", HTTP_GET, handleGETScale);
+  server.on("/api/v1/scale", HTTP_PUT, handlePUTScaleRequest, handlePUTScaleFileUpload, handlePUTScaleBody); // Little weird
+  server.on("/api/v1/settings", HTTP_GET, handleGETSettings);
+
   // Start the server
   server.begin(); 
 }
 
-const char* g_web_contents_body = R"=====(
-  <body>
-  <h1>Thoth Network Scale at HOSTNAME</h1>
-  <p>HX711 reading 
-    <span style="color:green;"> 
-      raw:<span id="raw">Loading...</span> 
-      tare:<span id="tare">Loading</span> 
-      adjusted:<span id="adjusted">Loading...</span>
-      weight(g):<span id="weight_g">Loading...</span>
-    </span>
-  </p>
+void handleGETRoot(AsyncWebServerRequest* request) {
+  if (VERBOSE) { Serial.println("handleGETRoot"); }
 
-  <h1>Settings</h1>
-  <p>IPv4: <span id="ipv4">Loading...</span></p>
-  <p>IPv6: <span id="ipv6">Loading...</span></p>
-  <script>
-    function fetchWeight() {
-      fetch("/weight")
-        .then(response => response.json())
-        .then(data => {
-          document.getElementById("raw").textContent = data.raw;
-          document.getElementById("tare").textContent = data.tare;
-          document.getElementById("adjusted").textContent = data.adjusted;
-          document.getElementById("weight_g").textContent = data.weight_g;
-          
-        })
-        .catch(console.error);
-    }
-
-    function fetchSettings() {
-      fetch("/settings")
-        .then(response => response.json())
-        .then(data => {
-          document.getElementById("ipv4").textContent = data.ipv4;
-          document.getElementById("ipv6").textContent = data.ipv6;
-        })
-        .catch(console.error);      
-    }
-
-    function sendTare() {
-      let xhr = new XMLHttpRequest();
-      let url = "tare";
-
-      xhr.open("POST", url, true);
-      //xhr.onreadystatechange = function() {
-      //  if (xhr.readyState === 4 && xhr.status === 200) {
-      //
-      //    // Print received data from server
-      //    result.innerHTML = this.responseText;
-      //  }
-      //}        
-      var data = JSON.stringify({"dummy": "foo"});
-      xhr.send(data);
-    }
-    fetchWeight();
-    fetchSettings();
-    setInterval(fetchWeight, 1000);
-    //setInterval(fetchSettings, 2000);
-  </script>
-  <h1>Commands</h1>
-  <p>
-    <button onclick="sendTare()">Tare</button>
-  </p>
-  </body>
-)=====";
-
-void handleRoot(AsyncWebServerRequest* request) {
   String html = "</html>\n";
   html += g_web_contents_head;
   html += g_web_contents_body;
@@ -219,34 +178,20 @@ void handleRoot(AsyncWebServerRequest* request) {
   request->send(200, "text/html", html);
 }
 
-void handleFavicon(AsyncWebServerRequest* request) {
-  Serial.println("Sending favicon");
-  request->send_P(200, "image/x-icon",  (uint8_t*)favicon, sizeof(favicon));
+void handleGETFavicon(AsyncWebServerRequest* request) {
+  if (VERBOSE) { Serial.println("handleGETFavicon"); }  
+  request->send_P(200, "image/x-icon", favicon, sizeof(favicon));
 }
 
-void handleTare(AsyncWebServerRequest* request) {
-  Serial.println("handleTare");
+void handleGETScale(AsyncWebServerRequest* request) {
+  if (0 && VERBOSE) { Serial.println("handleGETScale");}
+  
+  double weight;
+  double stddev;
   {
     std::lock_guard<std::mutex> lck(weight_mtx);
-    //g_tare = g_value;
-    g_tare = g_hx711_values.average();
-  }
-  Serial.println("tare set!");
-  JsonDocument data;
-  data["tare"] = g_tare;
-  String response;
-  serializeJson(data,response);
-  request->send(200, "application/json", response);
-  Serial.println(response);
-  //request->send(200, "text/plain", weightStr);
-}
-
-void handleWeightJson(AsyncWebServerRequest* request) {
-  long weight;
-  {
-    std::lock_guard<std::mutex> lck(weight_mtx);
-    //weight = g_value;
     weight = g_hx711_values.average();
+    stddev = g_hx711_values.stddev();
   }
   JsonDocument data;
   String response;
@@ -255,37 +200,67 @@ void handleWeightJson(AsyncWebServerRequest* request) {
   data["tare"] = String(g_tare);
   data["adjusted"] = String(weight-g_tare);
   data["weight_g"] = String( (weight-g_tare) * g_grams_per_count);
+  data["stddev_g"] = String( stddev * g_grams_per_count);
 
   serializeJson(data,response);
   request->send(200, "application/json", response);
-  //Serial.println(response);
 }
 
-void handleCalibrate(AsyncWebServerRequest* request) {
-//  if(request->isPost()) {
-//
-//    if(request->hasParam("calibrationWeightGrams")) {
-//      float calweight = request->getParam("calibrationWeightGrams")->value()->toFloat();
-//      Serial.println(calweight);
-//    }
-//
-//    request->send(200, "application/json", "");
-//    return;
-//  } 
+//  server.on("/api/v1/scale", HTTP_PUT, handlePUTScaleRequest, handlePUTScaleFileUpload, handlePUTScaleBody); // Little weird
+void handlePUTScaleRequest(AsyncWebServerRequest *request) {
+  Serial.println("handlePUTScaleRequest");
+}
+
+void handlePUTScaleFileUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final) {
+  Serial.println("handlePUTScaleFileUpload");
+}
+
+void handlePUTScaleBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+  Serial.println("handlePUTScaleBody");
   
-  Serial.println("Got a calibrate that was not a POST");
-  request->send(200, "application/json", "");
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, (char*)data);
+  if (!error) {
+    if (doc.containsKey("tare")) {
+      Serial.println("tare found!");
+      bool tare = doc["tare"];
+      Serial.println(tare ? "TRUE" : "FALSE");
+
+      if (tare) {
+        std::lock_guard<std::mutex> lck(weight_mtx);
+        g_tare = g_hx711_values.average();
+      }
+    }
+ 
+    if (doc.containsKey("calweight")) {
+      Serial.println("calibration_weight found!");
+      const char* calweight = doc["calweight"];
+      Serial.println(calweight);
+    }
+  } else {
+    Serial.println("handlePUTScaleBody ERROR");
+  }
+
+  JsonDocument responsedata;
+  String response;
+  serializeJson(responsedata,response);
+  request->send(200, "application/json", response);  
 }
 
-void handleCommand(AsyncWebServerRequest* request) {
+/* 
+void handlePUTScale(AsyncWebServerRequest* request) {
+  if (VERBOSE) { Serial.println("handlePUTScale");}
+
   JsonDocument data;
   String response;
-
-  request->send(200, "application/json", "");
+  serializeJson(data,response);
+  request->send(200, "application/json", response);
 }
+*/
 
-void handleGetSettings(AsyncWebServerRequest* request) {
-  Serial.println("handleGetSettings");
+void handleGETSettings(AsyncWebServerRequest* request) {
+
+  if (VERBOSE) { Serial.println("handleGETSettings"); }  
   JsonDocument data;
   String response;
 
@@ -317,35 +292,27 @@ void setup() {
 }
 
 void read_hx711() {
-  
-  //if (scale.is_ready()) {
   if (scale.wait_ready_timeout(1000)) {
-    //int64_t start = esp_timer_get_time();
-    long reading = scale.read_average(1);
-    //int64_t stop = esp_timer_get_time();
-    //Serial.print("HX711 value: ");
-    //Serial.println(reading);
-    //Serial.print("time(us):");
-    //Serial.println(stop-start);
+    long reading = scale.read();
 
     {
       std::lock_guard<std::mutex> lck(weight_mtx);
       g_value = reading;
       g_hx711_values.insert(reading);
     }
-    //Serial.print("HX711 rolling average:");
-    //Serial.println(g_hx711_values.average());
   } else {
     Serial.println("HX711 not found or not ready.");
   }
-
-  // sleep to give other tasks time to run.  This also gives time
-  // for the HX711 to "recover".  Max sample rate is 10 samples per second.
-  delay(90); // milliseconds
-
 }
 
 void loop() {
+  // Max sample rate of the hx711 is 10 samples per second.
+  // If read() or read_average() are called more often this,
+  // they will block.
   read_hx711();
+
+  // sleep to give other tasks time to run.
+  delay(90); // milliseconds
+
 }
 
