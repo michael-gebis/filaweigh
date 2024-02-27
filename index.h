@@ -54,12 +54,14 @@ const char* g_web_contents_body = R"=====(
       tare:<span id="tare">Loading</span> <br/>
       adjusted:<span id="adjusted">Loading...</span><br/>
       weight(g):<span id="weight_g">Loading...</span><br/>
+      stddev(g):<span id="stddev_g">Loading...</span><br/>
     </span>
   </p>
 
   <h1>Settings</h1>
   <p>IPv4: <span id="ipv4">Loading...</span></p>
   <p>IPv6: <span id="ipv6">Loading...</span></p>
+  <p>Hostname: <span id="hostname">Loading...</span></p>
 
   <script>
     function fetchScale() {
@@ -70,6 +72,7 @@ const char* g_web_contents_body = R"=====(
           document.getElementById("tare").textContent = data.tare;
           document.getElementById("adjusted").textContent = data.adjusted;
           document.getElementById("weight_g").textContent = data.weight_g;
+          document.getElementById("stddev_g").textContent = data.stddev_g;
           
         })
         .catch(console.error);
@@ -81,6 +84,7 @@ const char* g_web_contents_body = R"=====(
         .then(data => {
           document.getElementById("ipv4").textContent = data.ipv4;
           document.getElementById("ipv6").textContent = data.ipv6;
+          document.getElementById("hostname").textContent = data.hostname;
         })
         .catch(console.error);      
     }
@@ -98,6 +102,19 @@ const char* g_web_contents_body = R"=====(
         .catch(console.error);
     }
 
+    function sendCalweight() {
+    const requestOptions =  { 
+      method: "PUT", 
+      headers: { "Content-type": "application/json" },
+      body: JSON.stringify({ calweight: document.getElementById('calweight-input').value}),
+    };
+
+    fetch("/api/v1/scale", requestOptions)
+      .then(response => response.json())
+      .then(data => console.log(data))
+      .catch(console.error);
+    }
+
     fetchScale();
     fetchSettings();
     setInterval(fetchScale, 1000);
@@ -108,6 +125,9 @@ const char* g_web_contents_body = R"=====(
   <p>
     <button onclick="sendTare()">Tare</button>
   </p>
+  <p>
+    <input type="text" name="calweight-input" id="calweight-input">
+    <button onclick="sendCalweight()">Send Calibration Weight</button>
   </body>
 )=====";
 

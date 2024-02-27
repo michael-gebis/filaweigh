@@ -76,9 +76,8 @@ AsyncWebServer server(80);
 
 // Weight values
 std::mutex weight_mtx;
-long g_value = 0;
-long g_tare = 0;
-long g_calweight = 213245;
+double g_tare = 0.0;
+double g_calweight = 213245.0;
 
 // A rolling average gives us a more stable value for display
 // but at cost of having to wait for the average to stablize 
@@ -89,7 +88,6 @@ long g_calweight = 213245;
 // For now, using 10 samples (thus a stabilization time of 1 second)
 // seems like an OK tradeoff.
 RollingAverage<10> g_hx711_values;
-
 double g_grams_per_count = 1.0f/427.576f;
 
 void setupWiFi() {
@@ -139,9 +137,9 @@ void setupWiFi() {
 // rely upon the normal parameter parsing logic for POST or PUT.
 
 // To parse the JSON data sent as part of the body, I see two possibilties:
-// - Use the five argument server.on, and use the ArBodyHandlerFunction
+// - Use the five argument server.on(), and use the ArBodyHandlerFunction
 //   callback to parse the body JSON data.
-// - Use server.addHandler with a AsyncCallbackJsonWebHandler.
+// - Use server.addHandler() with a AsyncCallbackJsonWebHandler.
 //   The handler would have to check if the request was GET/POST/PUT for itself
 
 // For now, I have chosen to use the ArBodyHandlerFunction solution.
@@ -160,7 +158,7 @@ void setupWebServer()
 
   // API routes
   server.on("/api/v1/scale", HTTP_GET, handleGETScale);
-  server.on("/api/v1/scale", HTTP_PUT, handlePUTScaleRequest, handlePUTScaleFileUpload, handlePUTScaleBody); // Little weird
+  server.on("/api/v1/scale", HTTP_PUT, handlePUTScaleRequest, handlePUTScaleFileUpload, handlePUTScaleBody);
   server.on("/api/v1/settings", HTTP_GET, handleGETSettings);
 
   // Start the server
@@ -206,7 +204,6 @@ void handleGETScale(AsyncWebServerRequest* request) {
   request->send(200, "application/json", response);
 }
 
-//  server.on("/api/v1/scale", HTTP_PUT, handlePUTScaleRequest, handlePUTScaleFileUpload, handlePUTScaleBody); // Little weird
 void handlePUTScaleRequest(AsyncWebServerRequest *request) {
   Serial.println("handlePUTScaleRequest");
 }
@@ -222,9 +219,9 @@ void handlePUTScaleBody(AsyncWebServerRequest *request, uint8_t *data, size_t le
   DeserializationError error = deserializeJson(doc, (char*)data);
   if (!error) {
     if (doc.containsKey("tare")) {
-      Serial.println("tare found!");
+      //Serial.println("tare found!");
       bool tare = doc["tare"];
-      Serial.println(tare ? "TRUE" : "FALSE");
+      //Serial.println(tare ? "TRUE" : "FALSE");
 
       if (tare) {
         std::lock_guard<std::mutex> lck(weight_mtx);
@@ -233,9 +230,24 @@ void handlePUTScaleBody(AsyncWebServerRequest *request, uint8_t *data, size_t le
     }
  
     if (doc.containsKey("calweight")) {
+      // TODO: Sanitizing input!
+      // TODO: Updating the global value
+      // TODO: avoiding divide by zero!
+      // TODO: saving to persistant memory
       Serial.println("calibration_weight found!");
       const char* calweight = doc["calweight"];
       Serial.println(calweight);
+      double calweight2 = std::stod(calweight);
+      Serial.printf("calweight2 = %0.4f\n", calweight2);
+
+      double cur_reading = g_hx711_values.average();
+      double diff = cur_reading - g_tare;
+
+      double counts_per_gram = diff/calweight2;
+
+      Serial.printf("diff = %0.4f\n", diff);
+      Serial.printf("counts_per_gram = %0.4f\n", counts_per_gram);
+
     }
   } else {
     Serial.println("handlePUTScaleBody ERROR");
@@ -247,17 +259,6 @@ void handlePUTScaleBody(AsyncWebServerRequest *request, uint8_t *data, size_t le
   request->send(200, "application/json", response);  
 }
 
-/* 
-void handlePUTScale(AsyncWebServerRequest* request) {
-  if (VERBOSE) { Serial.println("handlePUTScale");}
-
-  JsonDocument data;
-  String response;
-  serializeJson(data,response);
-  request->send(200, "application/json", response);
-}
-*/
-
 void handleGETSettings(AsyncWebServerRequest* request) {
 
   if (VERBOSE) { Serial.println("handleGETSettings"); }  
@@ -266,10 +267,11 @@ void handleGETSettings(AsyncWebServerRequest* request) {
 
   data["ipv4"] = String(WiFi.localIP().toString());
   data["ipv6"] = String(WiFi.localIPv6().toString());
+  data["hostname"] = String(hostname);
   
   serializeJson(data,response);
   request->send(200, "application/json", response);
-  Serial.println(response);
+  //Serial.println(response);
 }
 
 void setup() {
@@ -297,7 +299,6 @@ void read_hx711() {
 
     {
       std::lock_guard<std::mutex> lck(weight_mtx);
-      g_value = reading;
       g_hx711_values.insert(reading);
     }
   } else {
