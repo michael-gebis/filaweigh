@@ -47,30 +47,33 @@ const char* g_web_contents_head = R"=====(
 
 const char* g_web_contents_body = R"=====(
   <body>
-  <h1>Thoth Network Scale</h1>
-  <p>HX711 readings:<br/> 
+  <h1>Network Scale</h1>
+  <p>Weight<br/> 
     <span style="color:green;"> 
-      raw:<span id="raw">Loading...</span> <br/>
-      tare:<span id="tare">Loading</span> <br/>
-      adjusted:<span id="adjusted">Loading...</span><br/>
       weight(g):<span id="weight_g">Loading...</span><br/>
       stddev(g):<span id="stddev_g">Loading...</span><br/>
     </span>
   </p>
 
-  <h1>Settings</h1>
+  <p>Scale debug info<br/> 
+    <span style="color:green;"> 
+      raw:<span id="raw">Loading...</span> <br/>
+      tare:<span id="tare">Loading</span> <br/>
+      adjusted:<span id="adjusted">Loading...</span><br/>
+      count_per_gram:<span id="count_per_gram">Loading...</span><br/>      
+    </span>
+  </p>
+
+  <h1>Network info</h1>
   <p>IPv4: <span id="ipv4">Loading...</span></p>
   <p>IPv6: <span id="ipv6">Loading...</span></p>
   <p>Hostname: <span id="hostname">Loading...</span></p>
 
   <script>
-    function fetchScale() {
-      fetch("/api/v1/scale")
+    function fetchScaleWeight() {
+      fetch("/api/v1/scale/weight")
         .then(response => response.json())
         .then(data => {
-          document.getElementById("raw").textContent = data.raw;
-          document.getElementById("tare").textContent = data.tare;
-          document.getElementById("adjusted").textContent = data.adjusted;
           document.getElementById("weight_g").textContent = data.weight_g;
           document.getElementById("stddev_g").textContent = data.stddev_g;
           
@@ -78,8 +81,22 @@ const char* g_web_contents_body = R"=====(
         .catch(console.error);
     }
 
-    function fetchSettings() {
-      fetch("/api/v1/settings")
+    function fetchScaleDebug() {
+      fetch("/api/v1/scale/debug")
+        .then(response => response.json())
+        .then(data => {
+          document.getElementById("raw").textContent = data.raw;
+          document.getElementById("tare").textContent = data.tare;
+          document.getElementById("adjusted").textContent = data.adjusted;
+          document.getElementById("count_per_gram").textContent = data.count_per_gram;
+          
+        })
+        .catch(console.error);
+    }
+
+
+    function fetchNetwork() {
+      fetch("/api/v1/network")
         .then(response => response.json())
         .then(data => {
           document.getElementById("ipv4").textContent = data.ipv4;
@@ -115,10 +132,14 @@ const char* g_web_contents_body = R"=====(
       .catch(console.error);
     }
 
-    fetchScale();
-    fetchSettings();
-    setInterval(fetchScale, 1000);
-    //setInterval(fetchSettings, 2000);
+    fetchScaleWeight();
+    fetchScaleDebug();
+    fetchNetwork();
+    
+    setInterval(fetchScaleWeight, 1000);
+    // Now read using buttons
+    //setInterval(fetchScaleDebug, 5000);
+    //setInterval(fetchNetwork, 2000);
   </script>
 
   <h1>Commands</h1>
@@ -126,7 +147,12 @@ const char* g_web_contents_body = R"=====(
     <button onclick="sendTare()">Tare</button>
   </p>
   <p>
-    <input type="text" name="calweight-input" id="calweight-input">
+    <button onclick="fetchScaleDebug()">Update scale debug info</button>
+  </p>
+  <p>
+    <button onclick="fetchNetwork()">Update network info</button>
+  </p>
+    <input type="number" min="0.1" name="calweight-input" id="calweight-input">
     <button onclick="sendCalweight()">Send Calibration Weight</button>
   </body>
 )=====";
